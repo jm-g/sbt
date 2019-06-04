@@ -13,6 +13,9 @@ import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.{ Locale, Properties }
 
+import org.apache.logging.log4j.{ Level => XLevel, LogManager => XLogManager }
+
+import org.apache.logging.log4j.core.LoggerContext
 import sbt.BasicCommandStrings.{ Shell, TemplateCommand }
 import sbt.Project.LoadAction
 import sbt.compiler.EvalImports
@@ -32,6 +35,8 @@ import xsbti.{ AppMain, AppProvider, ComponentProvider, Launcher, ScalaProvider 
 import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
+
+import scala.collection.JavaConverters._
 
 /** This class is the entry point for sbt. */
 final class xMain extends xsbti.AppMain {
@@ -889,8 +894,30 @@ object BuiltinCommands {
 
     val session = Load.initialSession(structure, eval, s0)
     SessionSettings.checkSession(session, s)
-    registerGlobalCaches(Project.setProject(session, structure, s))
+    val s2 = registerLoggerCleanup(s)
+    registerGlobalCaches(Project.setProject(session, structure, s2))
       .put(sbt.nio.Keys.hasCheckedMetaBuild, new AtomicBoolean(false))
+  }
+
+  private def registerLoggerCleanup(state: State): State = {
+    state.addExitHook(clearLoggerAppenders(state))
+  }
+
+  private def clearLoggerAppenders(state: State): Unit = {
+    state.log.debug("Removing left over appenders")
+    val ctx = XLogManager.getContext(false) match { case x: LoggerContext => x }
+    val config = ctx.getConfiguration
+
+    config.getLoggers.asScala.foreach {
+      case (loggerName, loggerConfig) =>
+        loggerConfig.getAppenders.asScala.foreach {
+          case (appenderName, appender) =>
+            state.log.warn(
+              s"Potential memory leak averted, by removing the appender $appenderName from logger $loggerName."
+            )
+            loggerConfig.removeAppender(appenderName)
+        }
+    }
   }
 
   def registerCompilerCache(s: State): State = {
